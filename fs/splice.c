@@ -188,68 +188,10 @@ ssize_t splice_to_pipe(struct pipe_inode_info *pipe,
 	if (!spd_pages)
 		return 0;
 
-	ret = 0;
-	do_wakeup = 0;
-	page_nr = 0;
-
-	pipe_lock(pipe);
-
-	for (;;) {
-		if (!pipe->readers) {
-			send_sig(SIGPIPE, current, 0);
-			if (!ret)
-				ret = -EPIPE;
-			break;
-		}
-
-		if (pipe->nrbufs < pipe->buffers) {
-			int newbuf = (pipe->curbuf + pipe->nrbufs) & (pipe->buffers - 1);
-			struct pipe_buffer *buf = pipe->bufs + newbuf;
-
-			buf->page = spd->pages[page_nr];
-			buf->offset = spd->partial[page_nr].offset;
-			buf->len = spd->partial[page_nr].len;
-			buf->private = spd->partial[page_nr].private;
-			buf->ops = spd->ops;
-			buf->flags = 0;
-			if (spd->flags & SPLICE_F_GIFT)
-				buf->flags |= PIPE_BUF_FLAG_GIFT;
-
-			pipe->nrbufs++;
-			page_nr++;
-			ret += buf->len;
-
-			if (pipe->files)
-				do_wakeup = 1;
-
-			if (!--spd->nr_pages)
-				break;
-			if (pipe->nrbufs < pipe->buffers)
-				continue;
-
-			break;
-		}
-
-		if (spd->flags & SPLICE_F_NONBLOCK) {
-			if (!ret)
-				ret = -EAGAIN;
-			break;
-		}
-
-		if (signal_pending(current)) {
-			if (!ret)
-				ret = -ERESTARTSYS;
-			break;
-		}
-
-		if (do_wakeup) {
-			wakeup_pipe_readers(pipe);
-			do_wakeup = 0;
-		}
-
-		pipe->waiting_writers++;
-		pipe_wait(pipe);
-		pipe->waiting_writers--;
+	if (unlikely(!pipe->readers)) {
+		send_sig(SIGPIPE, current, 0);
+		ret = -EPIPE;
+		goto out;
 	}
 
 	while (pipe->nrbufs < pipe->buffers) {
@@ -1361,13 +1303,7 @@ EXPORT_SYMBOL(do_splice_direct);
 
 static int wait_for_space(struct pipe_inode_info *pipe, unsigned flags)
 {
-	for (;;) {
-		if (unlikely(!pipe->readers)) {
-			send_sig(SIGPIPE, current, 0);
-			return -EPIPE;
-		}
-		if (pipe->nrbufs != pipe->buffers)
-			return 0;
+	while (pipe->nrbufs == pipe->buffers) {
 		if (flags & SPLICE_F_NONBLOCK)
 			return -EAGAIN;
 		if (signal_pending(current))
@@ -1376,6 +1312,7 @@ static int wait_for_space(struct pipe_inode_info *pipe, unsigned flags)
 		pipe_wait(pipe);
 		pipe->waiting_writers--;
 	}
+	return 0;
 }
 
 static int splice_pipe_to_pipe(struct pipe_inode_info *ipipe,
@@ -1590,14 +1527,20 @@ static long vmsplice_to_pipe(struct file *file, const struct iovec __user *uiov,
 		return -ENOMEM;
 	}
 
-	spd.nr_pages = get_iovec_page_array(&from, spd.pages,
-					    spd.partial,
-					    spd.nr_pages_max);
-	if (spd.nr_pages <= 0)
-		ret = spd.nr_pages;
-	else
-		ret = splice_to_pipe(pipe, &spd);
-
+	pipe_lock(pipe);
+	ret = wait_for_space(pipe, flags);
+	if (!ret) {
+		spd.nr_pages = get_iovec_page_array(&from, spd.pages,
+						    spd.partial,
+						    spd.nr_pages_max);
+		if (spd.nr_pages <= 0)
+			ret = spd.nr_pages;
+		else
+			ret = splice_to_pipe(pipe, &spd);
+	}
+	pipe_unlock(pipe);
+	if (ret > 0)
+		wakeup_pipe_readers(pipe);
 	splice_shrink_spd(&spd);
 	kfree(iov);
 	return ret;
