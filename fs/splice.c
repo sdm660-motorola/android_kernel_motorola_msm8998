@@ -1590,20 +1590,14 @@ static long vmsplice_to_pipe(struct file *file, const struct iovec __user *uiov,
 		return -ENOMEM;
 	}
 
-	pipe_lock(pipe);
-	ret = wait_for_space(pipe, flags);
-	if (!ret) {
-		spd.nr_pages = get_iovec_page_array(&from, spd.pages,
-						    spd.partial,
-						    spd.nr_pages_max);
-		if (spd.nr_pages <= 0)
-			ret = spd.nr_pages;
-		else
-			ret = splice_to_pipe(pipe, &spd);
-	}
-	pipe_unlock(pipe);
-	if (ret > 0)
-		wakeup_pipe_readers(pipe);
+	spd.nr_pages = get_iovec_page_array(&from, spd.pages,
+					    spd.partial,
+					    spd.nr_pages_max);
+	if (spd.nr_pages <= 0)
+		ret = spd.nr_pages;
+	else
+		ret = splice_to_pipe(pipe, &spd);
+
 	splice_shrink_spd(&spd);
 	kfree(iov);
 	return ret;
