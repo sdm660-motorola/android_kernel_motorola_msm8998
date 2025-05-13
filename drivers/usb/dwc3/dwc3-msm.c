@@ -2691,7 +2691,7 @@ static int dwc3_msm_resume(struct dwc3_msm *mdwc)
 		return 0;
 	}
 
-	pm_stay_awake(mdwc->dev);
+	pm_wakeup_event(mdwc->dev, 500);
 
 	/* Enable bus voting */
 	if (mdwc->bus_perf_client) {
