@@ -1,0 +1,200 @@
+name: Mimir-Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Select target device'
+        required: true
+        default: 'beckham'
+        type: choice
+        options:
+          - 'beckham'
+          - 'chef'
+          - 'evert'
+          - 'lake'
+          - 'messi'
+          - 'nash'
+          - 'payton'
+      droidspaces:
+        description: 'DroidSpaces support?'
+        required: true
+        default: 'n'
+        type: choice
+        options:
+          - 'y'
+          - 'n'
+      ksu:
+        description: 'Compile with KernelSU (-ksu)?'
+        required: true
+        default: 'n'
+        type: choice
+        options:
+          - 'y'
+          - 'n'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      KERNEL_NAME: Mimir Kernel
+
+    steps:
+      - name: Check Out
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set Timezone
+        run: |
+          sudo ln -snf /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime
+          echo "America/Sao_Paulo" | sudo tee /etc/timezone
+
+      - name: Setting up the environment
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi jq zip curl git make python3 perl libssl-dev libelf-dev bc
+
+          # Creates manual symlink for python
+          sudo ln -sf /usr/bin/python3 /usr/bin/python
+
+          # Target device configuration
+          DEVICE_SELECTED="${{ github.event.inputs.device }}"
+          echo "DEVICE=${DEVICE_SELECTED}" >> $GITHUB_ENV
+
+          case "${DEVICE_SELECTED}" in
+            "beckham") NAME="Moto Z3 Play" ;;
+            "chef")    NAME="Moto One Power" ;;
+            "evert")   NAME="Moto G6 Plus" ;;
+            "lake")    NAME="Moto G7 Plus" ;;
+            "messi")   NAME="Moto Z3" ;;
+            "nash")    NAME="Moto Z2 Force" ;;
+            "payton")  NAME="Moto X4" ;;
+            *)         NAME="Motorola Device" ;;
+          esac
+          echo "DEVICE_NAME=${NAME}" >> $GITHUB_ENV
+
+          # Environment variables
+          echo "BUILD_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
+          echo "REPO_NAME=${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
+
+      - name: Notify Build Started
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+          -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+          -d "parse_mode=markdown" \
+          -d "text=🚀 *New version of Mimir Kernel is compiling!*%0A%0A📦 *Repo:* \`${{ env.REPO_NAME }}\` %0A📱 *Device:* ${{ env.DEVICE_NAME }} (\`${{ env.DEVICE }}\`) %0A🌿 *Branch:* \`${{ github.ref_name }}\` %0A🧩 *Droidspaces:* \`${{ github.event.inputs.droidspaces }}\`   /   🔐 *KernelSU:* \`${{ github.event.inputs.ksu }}\` %0A⏳ *Please wait for completion...*" \
+          -d "reply_markup={\"inline_keyboard\":[[{\"text\":\"🔍 View real-time log\",\"url\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}]]}"
+
+      - name: Clone mimir-build-script & prepare
+        run: |
+          git clone --depth=1 --single-branch -b v4.x-clang https://github.com/Vhmit/mimir-build-script.git /tmp/mimir-build-script
+          cp /tmp/mimir-build-script/build.sh ./build.sh
+          chmod +x ./build.sh
+
+          # Replaces a branch in the AnyKernel3 git clone to remove the lineageos_ prefix
+          sed -i 's|git clone.*AnyKernel3.git -b "${DEVICE}"|git clone --depth=1 --single-branch https://github.com/Vhmit/AnyKernel3.git -b "${DEVICE#lineageos_}"|g' ./build.sh
+
+          # Replaces the ZIP filename construction to remove the lineageos_ prefix
+          sed -i 's|zip_name="${kernel_name}-\([^-]*\)-${DEVICE}-|zip_name="${kernel_name}-\1-${DEVICE#lineageos_}-|g' ./build.sh
+          sed -i 's|zip_name="${kernel_name}-${DEVICE}-|zip_name="${kernel_name}-${DEVICE#lineageos_}-|g' ./build.sh
+
+      - name: Run build script
+        id: build
+        run: |
+          ARGS="lineageos_${{ env.DEVICE }} -z"
+          if [ "${{ github.event.inputs.ksu }}" = "y" ]; then
+            ARGS="$ARGS -ksu"
+          fi
+
+          {
+            echo "${{ github.event.inputs.droidspaces }}"
+            echo "y"
+          } | ./build.sh $ARGS 2>&1 | tee build_output.log
+
+          clean() {
+            echo "$1" | sed -r 's/\x1B\[[0-9;]*[mK]//g' | tr -d '\r'
+          }
+
+          SHA=$(clean "$(grep -oP 'SHA256 Checksum: \K.*' build_output.log | tail -1 || true)")
+          [ -n "$SHA" ] && echo "ZIP_SHA256=$SHA" >> $GITHUB_ENV
+
+          LINK=$(clean "$(grep -oP 'Download Link: \K.*' build_output.log | tail -1 || true)")
+          [ -n "$LINK" ] && echo "ZIP_DOWNLOAD_LINK=$LINK" >> $GITHUB_ENV
+
+          SERVER=$(clean "$(grep -oP 'Uploading ZIP to \K[^.]*' build_output.log | tail -1 || true)")
+          [ -n "$SERVER" ] && echo "GOFILE_SERVER=$SERVER" >> $GITHUB_ENV
+
+          TIME=$(clean "$(grep -oP 'Completed successfully in: \K.*' build_output.log | tail -1 || true)")
+          [ -n "$TIME" ] && echo "BUILD_DURATION=$TIME" >> $GITHUB_ENV
+
+          TOOLCHAIN=$(clean "$(grep -oP 'Clang version: \K.*' build_output.log | tail -1 || true)")
+          [ -n "$TOOLCHAIN" ] && echo "TOOLCHAIN_VERSION=$TOOLCHAIN" >> $GITHUB_ENV
+
+          ERROR_URL=$(clean "$(grep -oP 'Rustbin Log: \K.*' build_output.log | tail -1 || true)")
+          [ -n "$ERROR_URL" ] && echo "ERROR_LOG_URL=$ERROR_URL" >> $GITHUB_ENV
+
+          ZIP_FILE=$(ls *.zip 2>/dev/null | head -1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "ZIP_FILENAME=$ZIP_FILE" >> $GITHUB_ENV
+            echo "ZIP_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "ZIP_FOUND=false" >> $GITHUB_ENV
+            exit 1
+          fi
+
+      - name: Send Notification (Success)
+        if: success()
+        run: |
+          BTN_TEXT="📥 Download (Gofile)"
+          BTN_URL="${ZIP_DOWNLOAD_LINK:-https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}}"
+          
+          SERVER_LINE=""
+          if [ -n "${GOFILE_SERVER}" ]; then
+            SERVER_LINE="🌐 *Server:* \`${GOFILE_SERVER}\` (10 days)%0A"
+          fi
+
+          MSG="✅ *New Mimir Kernel build for ${{ env.DEVICE_NAME }} available!*%0A%0A"
+          MSG+="📦 *File:* \`${ZIP_FILENAME}\`%0A"
+          MSG+="🛠️ *Compiler:* \`${TOOLCHAIN_VERSION}\`%0A"
+          MSG+="⏱️ *Time:* \`${BUILD_DURATION}\`%0A"
+          MSG+="$SERVER_LINE"
+          MSG+="🔐 *SHA256:* \`${ZIP_SHA256}\`"
+
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "parse_mode=markdown" \
+            -d "text=$MSG" \
+            -d "reply_markup={\"inline_keyboard\":[[{\"text\":\"$BTN_TEXT\",\"url\":\"$BTN_URL\"}]]}"
+
+      - name: Send Notification (Failure)
+        if: failure()
+        run: |
+          ERROR_URL="${ERROR_LOG_URL:-https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}}"
+
+          MESSAGE="❌ *Kernel build failed!*%0A%0A📦 *Repo:* \`${{ env.REPO_NAME }}\`%0A📱 *Device:* ${{ env.DEVICE_NAME }}%0A🛠️ *Compiler:* \`${TOOLCHAIN_VERSION:-unknown}\`%0A🆔 *Run ID:* ${{ github.run_id }}"
+
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "parse_mode=markdown" \
+            -d "text=$MESSAGE" \
+            -d "reply_markup={\"inline_keyboard\":[[{\"text\":\"📂 View Error Log\",\"url\":\"$ERROR_URL\"}]]}"
+
+      - name: Send Notification (Cancelled)
+        if: cancelled()
+        run: |
+          MESSAGE="⏹️ *Kernel build was cancelled!*%0A%0A📦 *Repo:* \`${{ env.REPO_NAME }}\`%0A📱 *Device:* ${{ env.DEVICE_NAME }}%0A🌿 *Branch:* \`${{ github.ref_name }}\`%0A🆔 *Run ID:* ${{ github.run_id }}"
+
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "parse_mode=markdown" \
+            -d "text=$MESSAGE" \
+            -d "reply_markup={\"inline_keyboard\":[[{\"text\":\"🔄 View / Re-run\",\"url\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}]]}"
+
+      - name: Cleanup workspace
+        if: always()
+        run: rm -rf out tc *.zip /tmp/mimir-build-script build_output.log
