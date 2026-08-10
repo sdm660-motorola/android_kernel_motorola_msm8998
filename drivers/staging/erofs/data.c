@@ -321,7 +321,7 @@ static int erofs_raw_access_readpages(struct file *filp,
 {
 	erofs_off_t last_block;
 	struct bio *bio = NULL;
-	gfp_t gfp = readahead_gfp_mask(mapping);
+	gfp_t gfp = mapping_gfp_mask(mapping) & ~__GFP_FS;
 
 	for (; nr_pages; --nr_pages) {
 		struct page *page = list_entry(pages->prev, struct page, lru);
