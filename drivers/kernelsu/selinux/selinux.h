@@ -29,6 +29,9 @@ bool is_zygote(const struct cred *cred);
 
 bool is_init(const struct cred *cred);
 
+bool is_ksu_transition(const struct task_security_struct *old_tsec,
+		       const struct task_security_struct *new_tsec);
+
 void apply_kernelsu_rules(void);
 
 int handle_sepolicy(void __user *user_data, u64 data_len);

@@ -207,3 +207,23 @@ bool is_init(const struct cred *cred)
 {
     return is_sid_match(cred, cached_init_sid, INIT_CONTEXT);
 }
+
+bool is_ksu_transition(const struct task_security_struct *old_tsec,
+		       const struct task_security_struct *new_tsec)
+{
+	if (!old_tsec || !new_tsec)
+		return false;
+
+	if (likely(cached_su_sid != 0))
+		return new_tsec->sid == cached_su_sid;
+
+	{
+		u32 ksu_sid = 0;
+
+		if (security_secctx_to_secid(KERNEL_SU_CONTEXT,
+					     strlen(KERNEL_SU_CONTEXT),
+					     &ksu_sid))
+			return false;
+		return new_tsec->sid == ksu_sid;
+	}
+}
