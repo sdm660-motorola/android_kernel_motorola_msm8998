@@ -4,6 +4,23 @@
 # Author: Kevin Brodsky <kevin.brodsky@arm.com>
 # A mix between the arm64 and arm vDSO Makefiles.
 
+# Sanitize leading '/' typo from Android build system (e.g. '/arm-linux-gnueabi-').
+# Command-line variables are re-passed to sub-makes via MAKEFLAGS, so the
+# sanitize in arch/arm64/Makefile alone doesn't reach this file. Use
+# 'override' to beat the command-line value here as well.
+ifneq ($(filter /%,$(CROSS_COMPILE_ARM32)),)
+  ifeq ($(wildcard $(CROSS_COMPILE_ARM32)ld),)
+    override CROSS_COMPILE_ARM32 := $(patsubst /%,%,$(CROSS_COMPILE_ARM32))
+  endif
+endif
+# LD_ARM32 may have been expanded from the buggy prefix above (or passed in
+# the environment), so sanitize it too.
+ifneq ($(filter /%,$(LD_ARM32)),)
+  ifeq ($(wildcard $(LD_ARM32)),)
+    override LD_ARM32 := $(patsubst /%,%,$(LD_ARM32))
+  endif
+endif
+
 ifeq ($(cc-name),clang)
   CC_ARM32 := $(CC) $(CLANG_TARGET_ARM32)
   GCC_ARM32_TC := $(realpath $(dir $(shell which $(CROSS_COMPILE_ARM32)ld))/..)

@@ -54,6 +54,17 @@ endif
 ifeq ($(CONFIG_COMPAT_VDSO), y)
   CROSS_COMPILE_ARM32 ?= $(CONFIG_CROSS_COMPILE_ARM32:"%"=%)
 
+  # Sanitize leading '/' typo from Android build system (e.g. '/arm-linux-gnueabi-'
+  # when the 32-bit prefix variable is empty). If '/xxx-ld' doesn't exist,
+  # strip the leading '/' so 'arm-linux-gnueabi-' is used instead.
+  # NOTE: CROSS_COMPILE_ARM32 often comes from the make command line, which
+  # file assignments cannot override without the 'override' directive.
+  ifneq ($(filter /%,$(CROSS_COMPILE_ARM32)),)
+    ifeq ($(wildcard $(CROSS_COMPILE_ARM32)ld),)
+      override CROSS_COMPILE_ARM32 := $(patsubst /%,%,$(CROSS_COMPILE_ARM32))
+    endif
+  endif
+
   # Check that the user has provided a valid prefix for the 32-bit toolchain.
   # To prevent selecting the system $(cc-name) by default, the prefix is not
   # allowed to be empty, unlike CROSS_COMPILE. In the unlikely event that the
@@ -67,6 +78,16 @@ ifeq ($(CONFIG_COMPAT_VDSO), y)
   ifeq ($(CROSS_COMPILE_ARM32),)
     $(error CROSS_COMPILE_ARM32 not defined or empty, the compat vDSO will not be built)
   else ifeq ($(cc-name),clang)
+    # Early validation for absolute-path typos like '/arm-linux-gnueabi-'
+    # (leading '/'). Without this, the build fails much later and
+    # cryptically at vdso32 link time with:
+    #   /bin/sh: 1: /arm-linux-gnueabi-ld: not found
+    # A valid absolute prefix (e.g. /usr/bin/) is still allowed.
+    ifneq ($(filter /%,$(CROSS_COMPILE_ARM32)),)
+      ifeq ($(wildcard $(CROSS_COMPILE_ARM32)ld),)
+        $(error CROSS_COMPILE_ARM32='$(CROSS_COMPILE_ARM32)' looks like an absolute path but $(CROSS_COMPILE_ARM32)ld not found - remove the leading '/'? want 'arm-linux-gnueabi-')
+      endif
+    endif
     export CLANG_TRIPLE_ARM32 ?= $(CROSS_COMPILE_ARM32)
     export CLANG_TARGET_ARM32 := --target=arm-linux-gnueabi
     export CONFIG_VDSO32 := y
